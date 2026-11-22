@@ -174,6 +174,46 @@ def test_history_period():
     assert market_data.history_period(50) == "1y"
     assert market_data.history_period(200) == "2y"
     assert market_data.history_period(400) == "5y"
+    assert market_data.history_period(50, "1wk") == "2y"
+    assert market_data.history_period(200, "1wk") == "10y"
+    assert market_data.history_period(21, "1mo") == "5y"
+    assert market_data.history_period(200, "1mo") == "max"
+
+
+def test_bars_ago_text():
+    from scanner import bars_ago_text
+    assert bars_ago_text(0, "1d") == "Today"
+    assert bars_ago_text(0, "1wk") == "This week"
+    assert bars_ago_text(3, "1wk") == "3w ago"
+    assert bars_ago_text(2, "1mo") == "2mo ago"
+
+
+def test_weekly_volume_is_reported_per_day():
+    df = frame([50.0] * 60, volume=5_000_000)          # 5M shares per weekly bar
+    hits = scan_symbol("W", df, cfg(period=10, timeframe="1wk", min_avg_volume=900_000))
+    assert hits and hits[0].avg_volume == pytest.approx(1_000_000)
+    assert hits[0].timeframe == "1wk"
+    assert scan_symbol("W", df, cfg(period=10, timeframe="1wk", min_avg_volume=1_100_000)) == []
+
+
+def test_merge_split_last_bar():
+    idx = pd.to_datetime(["2026-10-01", "2026-11-01", "2026-11-20"])
+    df = pd.DataFrame({"Open": [1, 2, 9], "High": [3, 4, 8], "Low": [0.5, 1.5, 1.0],
+                       "Close": [2, 3, 7], "Volume": [10, 20, 5]}, index=idx, dtype=float)
+    out = market_data.merge_split_last_bar(df, "1mo")
+    assert len(out) == 2
+    last = out.iloc[-1]
+    assert (last["Open"], last["High"], last["Low"], last["Close"], last["Volume"]) == (2, 8, 1.0, 7, 25)
+    assert len(market_data.merge_split_last_bar(df.iloc[:2], "1mo")) == 2
+    assert len(market_data.merge_split_last_bar(df, "1d")) == 3
+
+
+@pytest.mark.parametrize("tf", ["1d", "1wk", "1mo"])
+def test_demo_data_every_timeframe(tf):
+    data = market_data.demo_history(market_data.DEMO_TICKERS, timeframe=tf)
+    hits = scan_universe(data, ScanConfig(timeframe=tf, lookback_days=5, tolerance_pct=2.0,
+                                          min_price=0, min_avg_volume=0))
+    assert hits and all(h.timeframe == tf for h in hits)
 
 
 def test_symbols_and_custom_list():
@@ -223,8 +263,9 @@ def test_settings_roundtrip(tmp_path):
     s.scan.lookback_days = 7
     s.scan.mas[1] = MASpec(21, "HMA", False)
     s.theme = "Midnight Blue"
+    s.scan.timeframe = "1wk"
     save_settings(tmp_path / "s.json", s)
     t = load_settings(tmp_path / "s.json")
     assert t.scan.lookback_days == 7 and t.scan.mas[1].ma_type == "HMA" and not t.scan.mas[1].enabled
-    assert t.theme == "Midnight Blue"
+    assert t.theme == "Midnight Blue" and t.scan.timeframe == "1wk"
     assert load_settings(tmp_path / "missing.json").scan.lookback_days == 3

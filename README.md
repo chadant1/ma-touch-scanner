@@ -17,11 +17,12 @@ A desktop app that scans the major US stock indexes and shows which stocks have 
   - **TEMA**: triple exponential
 
   "Set all to" switches every MA type in one click.
-- **Look-back of 1–10 trading days.** 1 = today's bar only.
+- **Timeframe: Daily, Weekly or Monthly bars.** The moving averages, look-back and chart all follow it. For example, Weekly + SMA 200 is the 200-week moving average, and a 3-bar look-back means the last 3 weeks.
+- **Look-back of 1–10 bars** (days, weeks or months). 1 = the latest bar only (today, this week or this month).
 - **"Close within" tolerance.** A bar within X % of the MA counts as *near*. A bar whose high–low range crosses the MA counts as *touched*.
 - **Compare using** intraday highs/lows (wicks) or closing prices only. In close-only mode, a close that crosses the MA is shown as *Crossed*.
 - **Price now** filter: any side, above the MA (support tests / pullbacks), or below it (resistance tests).
-- **Minimum price and minimum 50-day average volume** filters to skip illiquid names.
+- **Minimum price and minimum average daily volume** filters to skip illiquid names. Volume is converted to shares per day on every timeframe, so one setting works for all three.
 - **Results table:** sort and filter by ticker, company, sector, MA or status. Right-click a row to open it on TradingView, Yahoo Finance or Finviz, or to copy tickers. Double-click opens TradingView. You can export the table to CSV.
 - **Chart panel:** candlesticks with every enabled MA, the matched MA drawn thicker, and the look-back window shaded.
 - **Themes:** Dark, Midnight Blue, Night Shift (warm, low blue light), OLED Black, High Contrast, Light and Solarized Light. Text size is adjustable from 8 to 18 pt.
@@ -53,7 +54,7 @@ Requires Python 3.10 or newer.
 
 ## How a "touch" is decided
 
-For each stock and each enabled MA, the app checks the last *N* daily bars (the look-back):
+For each stock and each enabled MA, the app checks the last *N* bars of the chosen timeframe (the look-back):
 
 | Result | Rule (High / Low mode) |
 |---|---|
@@ -64,14 +65,15 @@ The table shows the most recent qualifying bar. A real touch takes priority over
 
 The table columns mean:
 
-- **When:** how many bars ago the touch or near-miss happened.
+- **When:** how many bars ago the touch or near-miss happened (for example "Today", "2w ago" or "This month").
 - **Closest %:** the smallest gap during the window.
 - **vs MA %:** where the price sits now relative to the MA.
 - **Bars hit:** how many bars in the window qualified.
 
 ## Data sources and limits
 
-- **Prices:** daily bars from Yahoo Finance via the [`yfinance`](https://github.com/ranaroussi/yfinance) library. The data is free and unofficial, usually delayed about 15 minutes during the session. Today's bar is still forming until the close.
+- **Prices:** daily, weekly or monthly bars from Yahoo Finance via the [`yfinance`](https://github.com/ranaroussi/yfinance) library. The data is free and unofficial, usually delayed about 15 minutes during the session. The latest bar (today, this week or this month) is still forming until that period closes.
+- **History:** long MAs on big bars need a lot of history. A 200-week MA needs about 4 years and a 200-month MA about 17 years, so stocks that haven't traded that long are skipped for that MA.
 - **Index members:** downloaded from Wikipedia, Nasdaq, iShares ETF holdings and a public S&P 500 dataset, then cached for 7 days. Use **Refresh index lists** to force an update. The Dow 30 also has a built-in list in case those sources are down.
 - **Scan time:** a large scan (for example the Russell 2000) downloads around 2,000 histories and can take a few minutes. Yahoo may throttle very frequent requests, so keep auto-scan at 15 minutes or longer.
 - **Settings and caches** are stored in your user app-data folder.

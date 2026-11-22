@@ -127,6 +127,22 @@ PRICE_BASIS = {
     "close": "Closing price only",
 }
 
+TIMEFRAMES = {
+    "1d": "Daily",
+    "1wk": "Weekly",
+    "1mo": "Monthly",
+}
+# Trading days per bar, used to show average volume per day on any timeframe.
+DAYS_PER_BAR = {"1d": 1, "1wk": 5, "1mo": 21}
+BAR_UNITS = {"1d": ("day", "days", "d"), "1wk": ("week", "weeks", "w"), "1mo": ("month", "months", "mo")}
+
+
+def bars_ago_text(n: int, timeframe: str) -> str:
+    if n == 0:
+        return {"1d": "Today", "1wk": "This week", "1mo": "This month"}.get(timeframe, "Latest")
+    return f"{n}{BAR_UNITS.get(timeframe, BAR_UNITS['1d'])[2]} ago"
+
+
 SIDES = {
     "any": "Any side",
     "above": "Price above MA (support test)",
@@ -137,7 +153,8 @@ SIDES = {
 @dataclass
 class ScanConfig:
     mas: list[MASpec] = field(default_factory=lambda: [MASpec(p, t) for p, t in DEFAULT_MAS])
-    lookback_days: int = 3          # 1..10 most recent trading days, today included
+    timeframe: str = "1d"           # "1d" daily, "1wk" weekly, "1mo" monthly bars
+    lookback_days: int = 3          # 1..10 most recent bars (days/weeks/months), latest included
     tolerance_pct: float = 1.0      # how close counts as "near", as % of the MA value
     price_basis: str = "range"      # "range" or "close"
     side: str = "any"               # "any", "above", "below"
@@ -159,7 +176,7 @@ class Hit:
     ma_type: str
     period: int
     status: str            # "Touched", "Crossed", or "Near"
-    days_ago: int          # 0 = most recent bar
+    days_ago: int          # bars ago; 0 = most recent bar
     bar_date: pd.Timestamp
     ma_value: float        # MA on the most recent bar
     last_close: float
@@ -168,7 +185,8 @@ class Hit:
     closest_pct: float     # smallest gap between price and MA inside the lookback window
     side: str              # "Above" or "Below"
     hits_in_window: int    # how many bars in the window qualified
-    avg_volume: float
+    avg_volume: float      # average shares per trading day
+    timeframe: str = "1d"
     name: str = ""
     sector: str = ""
     indexes: str = ""
@@ -215,7 +233,11 @@ def scan_symbol(ticker: str, df: pd.DataFrame, cfg: ScanConfig) -> list[Hit]:
     last_close = float(closes[-1])
     prev_close = float(closes[-2])
     change_pct = (last_close / prev_close - 1.0) * 100.0 if prev_close else 0.0
-    avg_volume = float(df["Volume"].tail(50).mean()) if df["Volume"].notna().any() else float("nan")
+    # Average volume per trading day over roughly the last 50 days, whatever the bar size.
+    per_bar = DAYS_PER_BAR.get(cfg.timeframe, 1)
+    lookback_bars = max(2, int(round(50 / per_bar)))
+    avg_volume = (float(df["Volume"].tail(lookback_bars).mean()) / per_bar
+                  if df["Volume"].notna().any() else float("nan"))
 
     if last_close < cfg.min_price:
         return []
@@ -298,6 +320,7 @@ def scan_symbol(ticker: str, df: pd.DataFrame, cfg: ScanConfig) -> list[Hit]:
             side=side,
             hits_in_window=count,
             avg_volume=avg_volume,
+            timeframe=cfg.timeframe,
         ))
     return hits
 

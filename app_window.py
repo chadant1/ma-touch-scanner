@@ -22,7 +22,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
 import market_data
 import universe
 from chart_widget import ChartWidget
-from scanner import MA_DESCRIPTIONS, MA_TYPES, PRICE_BASIS, SIDES, Hit, MASpec, scan_universe
+from scanner import (BAR_UNITS, MA_DESCRIPTIONS, MA_TYPES, PRICE_BASIS, SIDES, TIMEFRAMES, Hit, MASpec,
+                     bars_ago_text, scan_universe)
 from settings_store import AppSettings, load_settings, save_settings
 from themes import THEMES, Theme, build_palette, build_stylesheet, get_theme
 
@@ -141,13 +142,14 @@ class ScanWorker(QObject):
         tickers = sorted(members)
 
         # 2. Download daily prices.
+        tf_name = TIMEFRAMES.get(cfg.timeframe, "Daily").lower()
         if self.demo:
-            data, failed = market_data.demo_history(tickers), []
+            data, failed = market_data.demo_history(tickers, timeframe=cfg.timeframe), []
         else:
-            period = market_data.history_period(cfg.max_period())
-            self.progress.emit(10, f"Downloading {len(tickers)} stocks…")
+            period = market_data.history_period(cfg.max_period(), cfg.timeframe)
+            self.progress.emit(10, f"Downloading {tf_name} prices for {len(tickers)} stocks…")
             data, failed = market_data.download_history(
-                tickers, period,
+                tickers, period, interval=cfg.timeframe,
                 progress=lambda d, n: self.progress.emit(10 + int(80 * d / max(n, 1)),
                                                          f"Downloading prices {d}/{n}…"),
                 cancelled=self.cancelled,
@@ -166,7 +168,7 @@ class ScanWorker(QObject):
             h.name, h.sector, h.indexes = m.name, m.sector, ", ".join(idx)
         self.finished.emit({
             "hits": hits, "data": data, "notes": notes, "failed": failed,
-            "scanned": len(data), "elapsed": time.time() - t0,
+            "scanned": len(data), "elapsed": time.time() - t0, "timeframe": cfg.timeframe,
         })
 
 
@@ -178,12 +180,14 @@ COLUMNS = [
     ("Ticker", "ticker"), ("Company", "name"), ("MA", "ma_label"), ("Status", "status"),
     ("When", "days_ago"), ("Last", "last_close"), ("Chg %", "change_pct"),
     ("MA value", "ma_value"), ("vs MA %", "distance_pct"), ("Closest %", "closest_pct"),
-    ("Side", "side"), ("Bars hit", "hits_in_window"), ("Avg volume", "avg_volume"),
+    ("Side", "side"), ("Bars hit", "hits_in_window"), ("Avg daily vol", "avg_volume"),
     ("Sector", "sector"), ("Index", "indexes"),
 ]
 TOOLTIPS = {
-    "When": "Most recent bar in the look-back window that touched or came close (Today = latest bar)",
+    "When": "Most recent bar in the look-back window that touched or came close (Today / This week / This month = latest bar)",
     "vs MA %": "Where the last price sits relative to the MA right now",
+    "Chg %": "Change since the previous bar's close (previous day, week or month)",
+    "Avg daily vol": "Average shares traded per day over roughly the last 50 trading days",
     "Closest %": "Smallest gap between the price bar and the MA during the look-back window (0 = touched)",
     "Bars hit": "How many bars in the look-back window touched or came close",
     "Side": "Price above the MA (testing support) or below it (testing resistance)",
@@ -242,7 +246,7 @@ class ResultsModel(QAbstractTableModel):
             if attr == "ticker":
                 return f"★ {v}" if h.key in self.new_keys else v
             if attr == "days_ago":
-                return "Today" if v == 0 else f"{v}d ago"
+                return bars_ago_text(v, h.timeframe)
             if attr in ("last_close", "ma_value"):
                 return f"{v:,.2f}"
             if attr in ("change_pct", "distance_pct"):
@@ -269,7 +273,10 @@ class ResultsModel(QAbstractTableModel):
             return int(Qt.AlignRight | Qt.AlignVCenter)
         if role == Qt.ToolTipRole:
             if attr == "days_ago":
-                return f"{h.status} on {h.bar_date:%a %b %d, %Y}"
+                if h.timeframe == "1d":
+                    return f"{h.status} on {h.bar_date:%a %b %d, %Y}"
+                unit = BAR_UNITS[h.timeframe][0]
+                return f"{h.status} on the {unit} bar dated {h.bar_date:%b %d, %Y}"
             if attr == "ticker" and h.key in self.new_keys:
                 return "New since the previous scan"
         return None
@@ -445,10 +452,16 @@ class MainWindow(QMainWindow):
 
         g_rule = QGroupBox("Touch rules")
         fr = QFormLayout(g_rule)
+        self.timeframe = QComboBox()
+        for k, v in TIMEFRAMES.items():
+            self.timeframe.addItem(v, k)
+        self.timeframe.setToolTip("Bar size for the moving averages and the look-back.\n"
+                                  "Weekly 200 = 200-week MA, Monthly 50 = 50-month MA, and so on.")
+        self.timeframe.currentIndexChanged.connect(lambda _: self._update_lookback_suffix())
+        fr.addRow("Timeframe", self.timeframe)
         self.lookback = QSpinBox()
         self.lookback.setRange(1, 10)
-        self.lookback.setSuffix(" trading days")
-        self.lookback.setToolTip("Look at the most recent N daily bars (1 = today only)")
+        self.lookback.valueChanged.connect(lambda _: self._update_lookback_suffix())
         fr.addRow("Look-back", self.lookback)
         self.tolerance = QDoubleSpinBox()
         self.tolerance.setRange(0.0, 10.0)
@@ -576,6 +589,14 @@ class MainWindow(QMainWindow):
             c.setItemData(i, MA_DESCRIPTIONS[t], Qt.ToolTipRole)
         return c
 
+    def _update_lookback_suffix(self):
+        tf = self.timeframe.currentData() or "1d"
+        one, many, _ = BAR_UNITS[tf]
+        n = self.lookback.value()
+        self.lookback.setSuffix(f" {one if n == 1 else many}")
+        latest = {"1d": "today only", "1wk": "this week only", "1mo": "this month only"}[tf]
+        self.lookback.setToolTip(f"Look at the most recent N {many} (1 = {latest})")
+
     def _set_all_types(self, t: str):
         if t in MA_TYPES:
             for _, _, combo in self.ma_rows:
@@ -594,7 +615,9 @@ class MainWindow(QMainWindow):
             cb.setChecked(spec.enabled)
             sp.setValue(spec.period)
             combo.setCurrentText(spec.ma_type)
+        self.timeframe.setCurrentIndex(max(0, self.timeframe.findData(s.scan.timeframe)))
         self.lookback.setValue(s.scan.lookback_days)
+        self._update_lookback_suffix()
         self.tolerance.setValue(s.scan.tolerance_pct)
         self.basis.setCurrentIndex(max(0, self.basis.findData(s.scan.price_basis)))
         self.side.setCurrentIndex(max(0, self.side.findData(s.scan.side)))
@@ -612,6 +635,7 @@ class MainWindow(QMainWindow):
         s.use_custom = self.custom_check.isChecked()
         s.custom_tickers = self.custom_edit.toPlainText()
         s.scan.mas = [MASpec(sp.value(), combo.currentText(), cb.isChecked()) for cb, sp, combo in self.ma_rows]
+        s.scan.timeframe = self.timeframe.currentData()
         s.scan.lookback_days = self.lookback.value()
         s.scan.tolerance_pct = self.tolerance.value()
         s.scan.price_basis = self.basis.currentData()
@@ -741,7 +765,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(100)
         self.progress.setFormat(f"Done · {stocks} stocks")
         stamp = datetime.now().strftime("%I:%M %p").lstrip("0")
-        msg = (f"{stamp} — scanned {result['scanned']} stocks in {result['elapsed']:.0f}s: "
+        tf_name = TIMEFRAMES.get(result.get("timeframe", "1d"), "Daily")
+        msg = (f"{stamp} — {tf_name} scan of {result['scanned']} stocks in {result['elapsed']:.0f}s: "
                f"{stocks} stocks / {len(hits)} MA hits.")
         if result["failed"]:
             msg += f"  {len(result['failed'])} tickers had no data."
@@ -752,7 +777,10 @@ class MainWindow(QMainWindow):
         if hits and self.proxy.rowCount():
             self.table.selectRow(0)
         else:
-            self.chart.clear("No stocks matched. Try a longer look-back or a wider 'close within' %.")
+            hint = "No stocks matched. Try a longer look-back or a wider 'close within' %."
+            if self._scan_cfg.timeframe != "1d":
+                hint += " On weekly/monthly bars, long MAs (e.g. 200) need years of history, so younger stocks are skipped."
+            self.chart.clear(hint)
         self._notify(hits, new_keys)
         self._update_auto_timer()
 
@@ -763,16 +791,19 @@ class MainWindow(QMainWindow):
             if not new_keys:
                 return
             fresh = [h for h in hits if h.key in new_keys]
-            title = f"{len({h.ticker for h in fresh})} new stocks near their moving averages"
+            title = f"{len({h.ticker for h in fresh})} new stocks near their {self._tf_word()} moving averages"
             body = ", ".join(f"{h.ticker} ({h.ma_label})" for h in fresh[:8])
         else:
             if self.isActiveWindow():
                 return
-            title = f"Scan finished: {len({h.ticker for h in hits})} stocks near their moving averages"
+            title = f"Scan finished: {len({h.ticker for h in hits})} stocks near their {self._tf_word()} moving averages"
             body = ", ".join(f"{h.ticker} ({h.ma_label})" for h in hits[:8])
         if self.tray:
             self.tray.showMessage(title, body, make_app_icon(), 10000)
         QApplication.alert(self, 0)
+
+    def _tf_word(self) -> str:
+        return TIMEFRAMES.get(self._scan_cfg.timeframe, "Daily").lower()
 
     def _auto_scan_tick(self):
         if self.hours_check.isChecked() and not us_market_open():
@@ -853,14 +884,14 @@ class MainWindow(QMainWindow):
             return
         with open(path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            w.writerow([c[0] for c in COLUMNS] + ["Bar date"])
+            w.writerow([c[0] for c in COLUMNS] + ["Bar date", "Timeframe"])
             for r in range(self.proxy.rowCount()):
                 h = self.model.hits[self.proxy.mapToSource(self.proxy.index(r, 0)).row()]
                 row = []
                 for _, attr in COLUMNS:
                     v = getattr(h, attr)
                     row.append(round(v, 4) if isinstance(v, float) else v)
-                w.writerow(row + [h.bar_date.strftime("%Y-%m-%d")])
+                w.writerow(row + [h.bar_date.strftime("%Y-%m-%d"), TIMEFRAMES.get(h.timeframe, h.timeframe)])
         self.status.showMessage(f"Saved {self.proxy.rowCount()} rows to {path}")
 
     # -- window -------------------------------------------------------------

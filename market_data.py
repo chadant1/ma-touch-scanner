@@ -10,13 +10,17 @@ import pandas as pd
 FIELDS = ["Open", "High", "Low", "Close", "Volume"]
 
 
-def history_period(max_ma_period: int) -> str:
-    """How much daily history to request so the longest MA is well warmed up."""
-    if max_ma_period <= 120:
-        return "1y"
-    if max_ma_period <= 250:
-        return "2y"
-    return "5y"
+BARS_PER_YEAR = {"1d": 252, "1wk": 52, "1mo": 12}
+
+
+def history_period(max_ma_period: int, timeframe: str = "1d") -> str:
+    """How much history to request so the longest MA is well warmed up."""
+    bars_needed = int(max_ma_period * 1.5) + 15
+    years = bars_needed / BARS_PER_YEAR.get(timeframe, 252)
+    for y in (1, 2, 5, 10):
+        if years <= y:
+            return f"{y}y"
+    return "max"
 
 
 def split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFrame]:
@@ -47,9 +51,33 @@ def split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFr
     return out
 
 
+def merge_split_last_bar(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """Yahoo sometimes returns the in-progress week/month as two rows; merge them."""
+    if interval == "1d" or len(df) < 2:
+        return df
+    freq = "W-FRI" if interval == "1wk" else "M"
+    a, b = df.index[-2], df.index[-1]
+    if pd.Timestamp(a).to_period(freq) != pd.Timestamp(b).to_period(freq):
+        return df
+    prev, last = df.iloc[-2], df.iloc[-1]
+    merged = prev.copy()
+    if "High" in df:
+        merged["High"] = max(prev["High"], last["High"])
+    if "Low" in df:
+        merged["Low"] = min(prev["Low"], last["Low"])
+    if "Close" in df:
+        merged["Close"] = last["Close"]
+    if "Volume" in df:
+        merged["Volume"] = prev["Volume"] + last["Volume"]
+    out = df.iloc[:-1].copy()
+    out.iloc[-1] = merged
+    return out
+
+
 def download_history(
     tickers: list[str],
     period: str,
+    interval: str = "1d",
     chunk_size: int = 100,
     progress: Callable[[int, int], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -66,10 +94,11 @@ def download_history(
         for attempt in range(3):
             try:
                 raw = yf.download(
-                    chunk, period=period, interval="1d", group_by="ticker",
+                    chunk, period=period, interval=interval, group_by="ticker",
                     auto_adjust=True, threads=True, progress=False,
                 )
-                frames.update(split_download(raw, chunk))
+                for t, f in split_download(raw, chunk).items():
+                    frames[t] = merge_split_last_bar(f, interval)
                 break
             except Exception:
                 time.sleep(2 * (attempt + 1))
@@ -90,20 +119,26 @@ DEMO_TICKERS = [
 ]
 
 
-def demo_history(tickers: list[str], bars: int = 400, seed: int = 7) -> dict[str, pd.DataFrame]:
+DEMO_FREQ = {"1d": "B", "1wk": "W-FRI", "1mo": "MS"}
+DEMO_SCALE = {"1d": 1.0, "1wk": 2.2, "1mo": 4.5}   # bigger moves on bigger bars
+
+
+def demo_history(tickers: list[str], bars: int = 400, seed: int = 7,
+                 timeframe: str = "1d") -> dict[str, pd.DataFrame]:
     rng = np.random.default_rng(seed)
     end = pd.Timestamp.today().normalize()
-    dates = pd.bdate_range(end=end, periods=bars)
+    dates = pd.date_range(end=end, periods=bars, freq=DEMO_FREQ.get(timeframe, "B"))
+    k = DEMO_SCALE.get(timeframe, 1.0)
     out = {}
     for t in tickers:
-        drift = rng.normal(0.0004, 0.0006)
-        vol = rng.uniform(0.012, 0.028)
+        drift = rng.normal(0.0004, 0.0006) * k * k
+        vol = rng.uniform(0.012, 0.028) * k
         rets = rng.normal(drift, vol, bars)
         close = rng.uniform(40, 400) * np.exp(np.cumsum(rets))
         opn = close * (1 + rng.normal(0, vol / 3, bars))
         high = np.maximum(opn, close) * (1 + np.abs(rng.normal(0, vol / 2, bars)))
         low = np.minimum(opn, close) * (1 - np.abs(rng.normal(0, vol / 2, bars)))
-        volume = rng.uniform(1e6, 3e7) * rng.lognormal(0, 0.3, bars)
+        volume = rng.uniform(1e6, 3e7) * rng.lognormal(0, 0.3, bars) * {"1d": 1, "1wk": 5, "1mo": 21}.get(timeframe, 1)
         out[t] = pd.DataFrame(
             {"Open": opn, "High": high, "Low": low, "Close": close, "Volume": volume},
             index=dates,

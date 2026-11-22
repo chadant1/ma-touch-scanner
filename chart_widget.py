@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from scanner import ScanConfig, clamp_lookback, compute_ma
+from scanner import TIMEFRAMES, ScanConfig, clamp_lookback, compute_ma
 from themes import Theme
 
 BARS_SHOWN = 160
@@ -44,12 +44,13 @@ class DateAxis(pg.AxisItem):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self.dates: list[pd.Timestamp] = []
+        self.fmt = "%b %d"
 
     def tickStrings(self, values, scale, spacing):
         out = []
         for v in values:
             i = int(round(v))
-            out.append(self.dates[i].strftime("%b %d") if 0 <= i < len(self.dates) else "")
+            out.append(self.dates[i].strftime(self.fmt) if 0 <= i < len(self.dates) else "")
         return out
 
 
@@ -99,6 +100,7 @@ class ChartWidget(QWidget):
         view = df.tail(BARS_SHOWN)
         offset = len(df) - len(view)
         self.axis.dates = list(view.index)
+        self.axis.fmt = {"1d": "%b %d", "1wk": "%b %Y", "1mo": "%b %Y"}.get(cfg.timeframe, "%b %d")
         x = np.arange(len(view))
         o, h, l, c = (view[k].to_numpy(float) for k in ("Open", "High", "Low", "Close"))
         o = np.where(np.isfinite(o), o, c)
@@ -128,7 +130,8 @@ class ChartWidget(QWidget):
         pad = (hi - lo) * 0.06
         self.plot.setYRange(lo - pad, hi + pad, padding=0)
         last = c[-1]
-        label = f"{ticker}" + (f"  ·  {name}" if name else "") + f"   {last:,.2f}"
+        tf = TIMEFRAMES.get(cfg.timeframe, "Daily")
+        label = f"{ticker}" + (f"  ·  {name}" if name else "") + f"   {last:,.2f}   ·  {tf} chart"
         if highlight_ma:
             label += f"   —  highlighted: {highlight_ma}"
         self.title.setText(label)

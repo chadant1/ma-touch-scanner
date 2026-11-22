@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from scanner import DEFAULT_MAS, MA_TYPES, MASpec, ScanConfig, clamp_lookback
+from scanner import DEFAULT_MAS, MA_TYPES, TIMEFRAMES, MASpec, ScanConfig, clamp_lookback
 
 
 @dataclass
@@ -41,6 +41,7 @@ class AppSettings:
             mas = [MASpec(p, t) for p, t in DEFAULT_MAS]
         s.scan = ScanConfig(
             mas=mas,
+            timeframe=scan.get("timeframe", "1d") if scan.get("timeframe") in TIMEFRAMES else "1d",
             lookback_days=clamp_lookback(int(scan.get("lookback_days", 3))),
             tolerance_pct=float(scan.get("tolerance_pct", 1.0)),
             price_basis=scan.get("price_basis", "range") if scan.get("price_basis") in ("range", "close") else "range",
